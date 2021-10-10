@@ -735,6 +735,40 @@ func Test_App_Static_Trailing_Slash(t *testing.T) {
 	req := httptest.NewRequest(MethodGet, "/john/", nil)
 	resp, err := app.Test(req)
 	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, 200, resp.StatusCode, "Status code")
+	utils.AssertEqual(t, false, resp.Header.Get(HeaderContentLength) == "")
+	utils.AssertEqual(t, MIMETextHTMLCharsetUTF8, resp.Header.Get(HeaderContentType))
+
+	app.Static("/john_without_index", "./.github/testdata/fs/css")
+
+	req = httptest.NewRequest(MethodGet, "/john_without_index/", nil)
+	resp, err = app.Test(req)
+	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, 404, resp.StatusCode, "Status code")
+	utils.AssertEqual(t, false, resp.Header.Get(HeaderContentLength) == "")
+	utils.AssertEqual(t, MIMETextPlainCharsetUTF8, resp.Header.Get(HeaderContentType))
+
+	app.Static("/john/", "./.github")
+
+	req = httptest.NewRequest(MethodGet, "/john/", nil)
+	resp, err = app.Test(req)
+	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, 200, resp.StatusCode, "Status code")
+	utils.AssertEqual(t, false, resp.Header.Get(HeaderContentLength) == "")
+	utils.AssertEqual(t, MIMETextHTMLCharsetUTF8, resp.Header.Get(HeaderContentType))
+
+	req = httptest.NewRequest(MethodGet, "/john", nil)
+	resp, err = app.Test(req)
+	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, 200, resp.StatusCode, "Status code")
+	utils.AssertEqual(t, false, resp.Header.Get(HeaderContentLength) == "")
+	utils.AssertEqual(t, MIMETextHTMLCharsetUTF8, resp.Header.Get(HeaderContentType))
+
+	app.Static("/john_without_index/", "./.github/testdata/fs/css")
+
+	req = httptest.NewRequest(MethodGet, "/john_without_index/", nil)
+	resp, err = app.Test(req)
+	utils.AssertEqual(t, nil, err, "app.Test(req)")
 	utils.AssertEqual(t, 404, resp.StatusCode, "Status code")
 	utils.AssertEqual(t, false, resp.Header.Get(HeaderContentLength) == "")
 	utils.AssertEqual(t, MIMETextPlainCharsetUTF8, resp.Header.Get(HeaderContentType))
@@ -1404,4 +1438,81 @@ func Test_App_DisablePreParseMultipartForm(t *testing.T) {
 	utils.AssertEqual(t, nil, err, "ioutil.ReadAll(resp.Body)")
 
 	utils.AssertEqual(t, testString, string(body))
+}
+
+func Test_App_UseMountedErrorHandler(t *testing.T) {
+	app := New()
+
+	fiber := New(Config{
+		ErrorHandler: func(ctx *Ctx, err error) error {
+			return ctx.Status(200).SendString("hi, i'm a custom error")
+		},
+	})
+	fiber.Get("/", func(c *Ctx) error {
+		return errors.New("something happened")
+	})
+
+	app.Mount("/api", fiber)
+
+	resp, err := app.Test(httptest.NewRequest(MethodGet, "/api", nil))
+	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, 200, resp.StatusCode, "Status code")
+
+	b, err := ioutil.ReadAll(resp.Body)
+	utils.AssertEqual(t, nil, err, "iotuil.ReadAll()")
+	utils.AssertEqual(t, "hi, i'm a custom error", string(b), "Response body")
+}
+
+func Test_App_UseMountedErrorHandlerForBestPrefixMatch(t *testing.T) {
+	app := New()
+
+	tsf := func(ctx *Ctx, err error) error {
+		return ctx.Status(200).SendString("hi, i'm a custom sub sub fiber error")
+	}
+	tripleSubFiber := New(Config{
+		ErrorHandler: tsf,
+	})
+	tripleSubFiber.Get("/", func(c *Ctx) error {
+		return errors.New("something happened")
+	})
+
+	sf := func(ctx *Ctx, err error) error {
+		return ctx.Status(200).SendString("hi, i'm a custom sub fiber error")
+	}
+	subfiber := New(Config{
+		ErrorHandler: sf,
+	})
+	subfiber.Get("/", func(c *Ctx) error {
+		return errors.New("something happened")
+	})
+	subfiber.Mount("/third", tripleSubFiber)
+
+	f := func(ctx *Ctx, err error) error {
+		return ctx.Status(200).SendString("hi, i'm a custom error")
+	}
+	fiber := New(Config{
+		ErrorHandler: f,
+	})
+	fiber.Get("/", func(c *Ctx) error {
+		return errors.New("something happened")
+	})
+	fiber.Mount("/sub", subfiber)
+
+	app.Mount("/api", fiber)
+
+	resp, err := app.Test(httptest.NewRequest(MethodGet, "/api/sub", nil))
+	utils.AssertEqual(t, nil, err, "/api/sub req")
+	utils.AssertEqual(t, 200, resp.StatusCode, "Status code")
+
+	b, err := ioutil.ReadAll(resp.Body)
+	utils.AssertEqual(t, nil, err, "iotuil.ReadAll()")
+	utils.AssertEqual(t, "hi, i'm a custom sub fiber error", string(b), "Response body")
+
+	resp2, err := app.Test(httptest.NewRequest(MethodGet, "/api/sub/third", nil))
+	utils.AssertEqual(t, nil, err, "/api/sub/third req")
+	utils.AssertEqual(t, 200, resp.StatusCode, "Status code")
+
+	b, err = ioutil.ReadAll(resp2.Body)
+	utils.AssertEqual(t, nil, err, "iotuil.ReadAll()")
+	utils.AssertEqual(t, "hi, i'm a custom sub sub fiber error", string(b), "Third fiber Response body")
 }

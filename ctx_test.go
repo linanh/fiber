@@ -399,6 +399,58 @@ func Test_Ctx_BodyParser(t *testing.T) {
 	testDecodeParserError(MIMEMultipartForm+`;boundary="b"`, "--b")
 }
 
+// go test -run Test_Ctx_BodyParser_WithSetParserDecoder
+func Test_Ctx_BodyParser_WithSetParserDecoder(t *testing.T) {
+	type CustomTime time.Time
+
+	var timeConverter = func(value string) reflect.Value {
+		if v, err := time.Parse("2006-01-02", value); err == nil {
+			return reflect.ValueOf(v)
+		}
+		return reflect.Value{}
+	}
+
+	customTime := ParserType{
+		Customtype: CustomTime{},
+		Converter:  timeConverter,
+	}
+
+	SetParserDecoder(ParserConfig{
+		IgnoreUnknownKeys: true,
+		ParserType:        []ParserType{customTime},
+		ZeroEmpty:         true,
+		SetAliasTag:       "form",
+	})
+
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+
+	type Demo struct {
+		Date  CustomTime `form:"date"`
+		Title string     `form:"title"`
+		Body  string     `form:"body"`
+	}
+
+	testDecodeParser := func(contentType, body string) {
+		c.Request().Header.SetContentType(contentType)
+		c.Request().SetBody([]byte(body))
+		c.Request().Header.SetContentLength(len(body))
+		d := Demo{
+			Title: "Existing title",
+			Body:  "Existing Body",
+		}
+		utils.AssertEqual(t, nil, c.BodyParser(&d))
+		date := fmt.Sprintf("%v", d.Date)
+		utils.AssertEqual(t, "{0 63743587200 <nil>}", date)
+		utils.AssertEqual(t, "", d.Title)
+		utils.AssertEqual(t, "New Body", d.Body)
+	}
+
+	testDecodeParser(MIMEApplicationForm, "date=2020-12-15&title=&body=New Body")
+	testDecodeParser(MIMEMultipartForm+`; boundary="b"`, "--b\r\nContent-Disposition: form-data; name=\"date\"\r\n\r\n2020-12-15\r\n--b\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\n\r\n--b\r\nContent-Disposition: form-data; name=\"body\"\r\n\r\nNew Body\r\n--b--")
+}
+
 // go test -v -run=^$ -bench=Benchmark_Ctx_BodyParser_JSON -benchmem -count=4
 func Benchmark_Ctx_BodyParser_JSON(b *testing.B) {
 	app := New()
@@ -1656,6 +1708,21 @@ func Test_Ctx_SendFile_Immutable(t *testing.T) {
 	utils.AssertEqual(t, StatusOK, resp.StatusCode)
 }
 
+// go test -race -run Test_Ctx_SendFile_RestoreOriginalURL
+func Test_Ctx_SendFile_RestoreOriginalURL(t *testing.T) {
+	t.Parallel()
+	app := New()
+	app.Get("/", func(c *Ctx) error {
+		originalURL := c.OriginalURL()
+		err := c.SendFile("ctx.go")
+		utils.AssertEqual(t, originalURL, c.OriginalURL())
+		return err
+	})
+
+	_, err := app.Test(httptest.NewRequest("GET", "/?test=true", nil))
+	utils.AssertEqual(t, nil, err)
+}
+
 // go test -run Test_Ctx_JSON
 func Test_Ctx_JSON(t *testing.T) {
 	t.Parallel()
@@ -2311,6 +2378,60 @@ func Test_Ctx_QueryParser(t *testing.T) {
 	rq := new(RequiredQuery)
 	c.Request().URI().SetQueryString("")
 	utils.AssertEqual(t, "name is empty", c.QueryParser(rq).Error())
+}
+
+// go test -run Test_Ctx_QueryParser_WithSetParserDecoder -v
+func Test_Ctx_QueryParser_WithSetParserDecoder(t *testing.T) {
+	type NonRFCTime time.Time
+
+	var NonRFCConverter = func(value string) reflect.Value {
+		if v, err := time.Parse("2006-01-02", value); err == nil {
+			return reflect.ValueOf(v)
+		}
+		return reflect.Value{}
+	}
+
+	nonRFCTime := ParserType{
+		Customtype: NonRFCTime{},
+		Converter:  NonRFCConverter,
+	}
+
+	SetParserDecoder(ParserConfig{
+		IgnoreUnknownKeys: true,
+		ParserType:        []ParserType{nonRFCTime},
+		ZeroEmpty:         true,
+		SetAliasTag:       "query",
+	})
+
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+
+	type NonRFCTimeInput struct {
+		Date  NonRFCTime `query:"date"`
+		Title string     `query:"title"`
+		Body  string     `query:"body"`
+	}
+
+	c.Request().SetBody([]byte(``))
+	c.Request().Header.SetContentType("")
+	q := new(NonRFCTimeInput)
+
+	c.Request().URI().SetQueryString("date=2021-04-10&title=CustomDateTest&Body=October")
+	utils.AssertEqual(t, nil, c.QueryParser(q))
+	fmt.Println(q.Date, "q.Date")
+	utils.AssertEqual(t, "CustomDateTest", q.Title)
+	date := fmt.Sprintf("%v", q.Date)
+	utils.AssertEqual(t, "{0 63753609600 <nil>}", date)
+	utils.AssertEqual(t, "October", q.Body)
+
+	c.Request().URI().SetQueryString("date=2021-04-10&title&Body=October")
+	q = &NonRFCTimeInput{
+		Title: "Existing title",
+		Body:  "Existing Body",
+	}
+	utils.AssertEqual(t, nil, c.QueryParser(q))
+	utils.AssertEqual(t, "", q.Title)
 }
 
 // go test -run Test_Ctx_QueryParser_Schema -v
