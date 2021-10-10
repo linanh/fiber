@@ -19,6 +19,7 @@ type Session struct {
 	data       *data         // key value data
 	byteBuffer *bytes.Buffer // byte buffer for the en- and decode
 	exp        time.Duration // expiration of this session
+	origExp    time.Duration // origin expiration of this session
 }
 
 var sessionPool = sync.Pool{
@@ -187,6 +188,7 @@ func (s *Session) Keys() []string {
 // SetExpiry sets a specific expiration for this session
 func (s *Session) SetExpiry(exp time.Duration) {
 	s.exp = exp
+	s.origExp = exp
 }
 
 func (s *Session) setSession() {
@@ -199,8 +201,10 @@ func (s *Session) setSession() {
 		fcookie.SetValue(s.id)
 		fcookie.SetPath(s.config.CookiePath)
 		fcookie.SetDomain(s.config.CookieDomain)
-		fcookie.SetMaxAge(int(s.exp.Seconds()))
-		fcookie.SetExpire(time.Now().Add(s.exp))
+		if s.origExp > 0 {
+			fcookie.SetMaxAge(int(s.exp.Seconds()))
+			fcookie.SetExpire(time.Now().Add(s.exp))
+		}
 		fcookie.SetSecure(s.config.CookieSecure)
 		fcookie.SetHTTPOnly(s.config.CookieHTTPOnly)
 
