@@ -113,7 +113,6 @@ func (s *Session) Destroy() error {
 
 // Regenerate generates a new session id and delete the old one from Storage
 func (s *Session) Regenerate() error {
-
 	// Delete old id from storage
 	if err := s.config.Storage.Delete(s.id); err != nil {
 		return err
@@ -136,7 +135,6 @@ func (s *Session) refresh() {
 
 // Save will update the storage and client cookie
 func (s *Session) Save() error {
-
 	// Better safe than sorry
 	if s.data == nil {
 		return nil
@@ -177,7 +175,7 @@ func (s *Session) Save() error {
 	return nil
 }
 
-// Keys will retrive all keys in current session
+// Keys will retrieve all keys in current session
 func (s *Session) Keys() []string {
 	if s.data == nil {
 		return []string{}

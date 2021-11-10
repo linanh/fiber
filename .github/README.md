@@ -486,6 +486,31 @@ func main() {
 
 </details>
 
+### Using Trusted Proxy
+
+📖 [Config](https://docs.gofiber.io/api/fiber#config)
+
+```go
+import (
+    "github.com/gofiber/fiber/v2"
+    "github.com/gofiber/fiber/v2/middleware/recover"
+)
+
+func main() {
+    app := fiber.New(fiber.Config{
+        EnableTrustedProxyCheck: true,
+        TrustedProxies: []string{"0.0.0.0", "1.1.1.1/30"}, // IP address or IP address range
+        ProxyHeader: fiber.HeaderXForwardedFor},
+    })
+
+    // ...
+
+    log.Fatal(app.Listen(":3000"))
+}
+```
+
+</details>
+
 ## 🧬 Internal Middleware
 
 Here is a list of middleware that are included within the Fiber framework.
@@ -596,7 +621,7 @@ Copyright (c) 2019-present [Fenny](https://github.com/fenny) and [Contributors](
 -   [schema](https://github.com/gorilla/schema/blob/master/LICENSE)
 -   [isatty](https://github.com/mattn/go-isatty/blob/master/LICENSE)
 -   [fasthttp](https://github.com/valyala/fasthttp/blob/master/LICENSE)
--   [encoding](https://github.com/segmentio/encoding/blob/master/LICENSE)
+-   [go-json](https://github.com/goccy/go-json/blob/master/LICENSE)
 -   [colorable](https://github.com/mattn/go-colorable/blob/master/LICENSE)
 -   [fasttemplate](https://github.com/valyala/fasttemplate/blob/master/LICENSE)
 -   [bytebufferpool](https://github.com/valyala/bytebufferpool/blob/master/LICENSE)
