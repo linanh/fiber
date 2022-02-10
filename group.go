@@ -7,6 +7,7 @@ package fiber
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"sync/atomic"
 )
 
@@ -14,6 +15,7 @@ import (
 type Group struct {
 	app    *App
 	prefix string
+	name   string
 }
 
 // Mount attaches another app instance as a sub-router along a routing path.
@@ -21,14 +23,36 @@ type Group struct {
 // compose them as a single service using Mount.
 func (grp *Group) Mount(prefix string, fiber *App) Router {
 	stack := fiber.Stack()
+	groupPath := getGroupPath(grp.prefix, prefix)
+
 	for m := range stack {
 		for r := range stack[m] {
 			route := grp.app.copyRoute(stack[m][r])
-			grp.app.addRoute(route.Method, grp.app.addPrefixToRoute(getGroupPath(grp.prefix, prefix), route))
+			grp.app.addRoute(route.Method, grp.app.addPrefixToRoute(groupPath, route))
 		}
 	}
 
-	atomic.AddUint32(&grp.app.handlerCount, fiber.handlerCount)
+	// Support for configs of mounted-apps and sub-mounted-apps
+	groupPath = strings.TrimRight(groupPath, "/")
+	for mountedPrefixes, subApp := range fiber.appList {
+		grp.app.appList[groupPath+mountedPrefixes] = subApp
+		subApp.init()
+	}
+
+	atomic.AddUint32(&grp.app.handlersCount, fiber.handlersCount)
+
+	return grp
+}
+
+// Assign name to specific route.
+func (grp *Group) Name(name string) Router {
+	if strings.HasPrefix(grp.prefix, latestGroup.prefix) {
+		grp.name = latestGroup.name + name
+	} else {
+		grp.name = name
+	}
+
+	latestGroup = *grp
 
 	return grp
 }
@@ -145,4 +169,19 @@ func (grp *Group) Group(prefix string, handlers ...Handler) Router {
 		_ = grp.app.register(methodUse, prefix, handlers...)
 	}
 	return grp.app.Group(prefix)
+}
+
+// Route is used to define routes with a common prefix inside the common function.
+// Uses Group method to define new sub-router.
+func (grp *Group) Route(prefix string, fn func(router Router), name ...string) Router {
+	// Create new group
+	group := grp.Group(prefix)
+	if len(name) > 0 {
+		group.Name(name[0])
+	}
+
+	// Define routes
+	fn(group)
+
+	return group
 }

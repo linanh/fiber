@@ -36,7 +36,11 @@ type Router interface {
 
 	Group(prefix string, handlers ...Handler) Router
 
+	Route(prefix string, fn func(router Router), name ...string) Router
+
 	Mount(prefix string, fiber *App) Router
+
+	Name(name string) Router
 }
 
 // Route is a struct that holds all metadata for each registered handler
@@ -51,6 +55,7 @@ type Route struct {
 
 	// Public fields
 	Method   string    `json:"method"` // HTTP method
+	Name     string    `json:"name"`   // Route's name
 	Path     string    `json:"path"`   // Original registered route path
 	Params   []string  `json:"params"` // Case sensitive param keys
 	Handlers []Handler `json:"-"`      // Ctx handlers
@@ -263,7 +268,7 @@ func (app *App) register(method, pathRaw string, handlers ...Handler) Router {
 		Handlers: handlers,
 	}
 	// Increment global handler count
-	atomic.AddUint32(&app.handlerCount, uint32(len(handlers)))
+	atomic.AddUint32(&app.handlersCount, uint32(len(handlers)))
 
 	// Middleware route matches all HTTP methods
 	if isUse {
@@ -372,6 +377,10 @@ func (app *App) registerStatic(prefix, root string, config ...Static) Router {
 		}
 		// Serve file
 		fileHandler(c.fasthttp)
+		// Sets the response Content-Disposition header to attachment if the Download option is true
+		if len(config) > 0 && config[0].Download {
+			c.Attachment()
+		}
 		// Return request if found and not forbidden
 		status := c.fasthttp.Response.StatusCode()
 		if status != StatusNotFound && status != StatusForbidden {
@@ -400,7 +409,7 @@ func (app *App) registerStatic(prefix, root string, config ...Static) Router {
 		Handlers: []Handler{handler},
 	}
 	// Increment global handler count
-	atomic.AddUint32(&app.handlerCount, 1)
+	atomic.AddUint32(&app.handlersCount, 1)
 	// Add route to stack
 	app.addRoute(MethodGet, &route)
 	// Add HEAD route
@@ -425,6 +434,10 @@ func (app *App) addRoute(method string, route *Route) {
 		app.stack[m] = append(app.stack[m], route)
 		app.routesRefreshed = true
 	}
+
+	latestRoute.mu.Lock()
+	latestRoute.route = route
+	latestRoute.mu.Unlock()
 }
 
 // buildTree build the prefix tree from the previously registered routes

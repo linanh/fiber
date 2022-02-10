@@ -74,9 +74,12 @@
   <a href="https://gofiber.io/discord">
     <img src="https://img.shields.io/discord/704680098577514527?style=flat&label=%F0%9F%92%AC%20discord&color=00ACD7">
   </a>
+  <a href="https://github.com/gofiber/fiber/blob/master/.github/README_it.md">
+    <img height="20px" src="https://img.shields.io/badge/IT-flag.svg?color=555555&style=flat&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTUwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiBoZWlnaHQ9IjEwMDAiIHZpZXdCb3g9IjAgMCAzIDIiPg0KPHBhdGggZmlsbD0iIzAwOTI0NiIgZD0ibTAsMGgxdjJoLTF6Ii8+DQo8cGF0aCBmaWxsPSIjZmZmIiBkPSJtMSwwaDF2MmgtMXoiLz4NCjxwYXRoIGZpbGw9IiNjZTJiMzciIGQ9Im0yLDBoMXYyaC0xeiIvPg0KPC9zdmc+DQo=">
+  </a>
 </p>
 <p align="center">
-    <b>Fiber</b>, <a href="https://golang.org/doc/">Go</a> için <b>en hızlı</b> HTTP motoru olan <a href="https://github.com/valyala/fasthttp">Fasthttp</a> üzerine inşa edilmiş, <a href="https://github.com/expressjs/express">Express</a>'ten ilham alan bir <b>web frameworküdür</b>. <b>Sıfır bellek ataması</b> ve <b>performans</b> göz önünde bulundurularak <b>hızlı</b> geliştirme için işleri <b>kolaylaştırmak</b> üzere tasarlanmıştır.
+    <b>Fiber</b>, <a href="https://golang.org/doc/">Go</a> için <b>en hızlı</b> HTTP sunucusu olan <a href="https://github.com/valyala/fasthttp">Fasthttp</a> üzerine inşa edilmiş, <a href="https://github.com/expressjs/express">Express</a>'ten ilham alan bir <b>web frameworküdür</b>. <b>Sıfır bellek ataması</b> ve <b>performans</b> göz önünde bulundurularak <b>hızlı</b> geliştirme için işleri <b>kolaylaştırmak</b> üzere tasarlanmıştır.
 </p>
 
 ## ⚡️ Hızlı Başlangıç
@@ -110,7 +113,7 @@ Bu testler [TechEmpower](https://www.techempower.com/benchmarks/#section=data-r1
 
 Go'nun `1.14` sürümü ([indir](https://golang.org/dl/)) ya da daha yüksek bir sürüm gerekli.
 
-Bir klasör oluşturup klasörün içinde `go mod init github.com/your/repo` yazarak projenize başlayın ([daha fazla öğren](https://blog.golang.org/using-go-modules)). Ardından Fiber'ı kurmak için [`go get`](https://golang.org/cmd/go/#hdr-Add_dependencies_to_current_module_and_install_them) komutunu çalıştırın:
+Bir klasör oluşturup klasörün içinde `go mod init github.com/your/repo` komutunu yazarak projenizi geliştirmeye başlayın ([daha fazla öğren](https://blog.golang.org/using-go-modules)). Ardından Fiber'ı kurmak için [`go get`](https://golang.org/cmd/go/#hdr-Add_dependencies_to_current_module_and_install_them) komutunu çalıştırın:
 
 ```bash
 go get -u github.com/gofiber/fiber/v2
@@ -133,11 +136,11 @@ go get -u github.com/gofiber/fiber/v2
 
 ## 💡 Felsefe
 
-[Node.js](https://nodejs.org/en/about/)'ten [Go](https://golang.org/doc/)'ya geçen yeni gopherlar kendi web uygulamalarını ve mikroservislerini yazmaya başlamadan önce dili öğrenmek ile uğraşıyorlar. Fiber, bir **framework** olarak, **minimalizm** ve **UNIX yolu**nu izleme fikri ile oluşturuldu. Böylece yeni gopherlar sıcak ve güvenilir bir hoşgeldin ile Go dünyasına giriş yapabilirler.
+[Node.js](https://nodejs.org/en/about/)'ten [Go](https://golang.org/doc/)'ya geçen yeni gopherlar kendi web uygulamalarını ve mikroservislerini yazmaya başlamadan önce dili öğrenmek ile uğraşıyorlar. Fiber, bir **framework** olarak, **minimalizm** ve **UNIX yolu**nu izleme fikri ile oluşturuldu. Böylece yeni gopherlar sıcak ve güvenilir bir hoş geldin ile Go dünyasına giriş yapabilirler.
 
 Fiber internet üzerinde en popüler olan Express web frameworkünden **esinlenmiştir**. Biz Express'in **kolaylığını** ve Go'nun **ham performansını** birleştirdik. Daha önce Node.js üzerinde (Express veya benzerini kullanarak) bir web uygulaması geliştirdiyseniz, pek çok metod ve prensip size **çok tanıdık** gelecektir.
 
-## Sınırlamalar
+## ⚠️ Sınırlamalar
 
 -   Fiber unsafe kullanımı sebebiyle her zaman Go'nun son sürümüyle uyumlu olmayabilir. Fiber 2.18.0, Go 1.14 ile 1.17 sürümleriyle test edildi.
 -   Fiber net/http arabirimiyle uyumlu değildir. Yani gqlgen veya go-swagger gibi net/http ekosisteminin parçası olan projeleri kullanamazsınız.
@@ -146,7 +149,7 @@ Fiber internet üzerinde en popüler olan Express web frameworkünden **esinlenm
 
 Aşağıda yaygın örneklerden bazıları listelenmiştir. Daha fazla kod örneği görmek için lütfen [Github reposunu](https://github.com/gofiber/recipes) veya [API dokümantasyonunu](https://docs.gofiber.io) ziyaret ediniz.
 
-#### 📖 [**Basit Routelama**](https://docs.gofiber.io/#basic-routing)
+#### 📖 [**Basit Rotalama**](https://docs.gofiber.io/#basic-routing)
 
 ```go
 func main() {
@@ -181,6 +184,36 @@ func main() {
         msg := fmt.Sprintf("Merhaba, %s 👋!", c.Params("isim"))
         return c.SendString(msg) // => Merhaba Muhittin 👋!
     })
+
+    log.Fatal(app.Listen(":3000"))
+}
+
+```
+
+#### 📖 [**Route İsimlendirmesi**](https://docs.gofiber.io/api/app#name)
+
+```go
+func main() {
+    app := fiber.New()
+
+    // GET /api/register
+    app.Get("/api/*", func(c *fiber.Ctx) error {
+        msg := fmt.Sprintf("✋ %s", c.Params("*"))
+        return c.SendString(msg) // => ✋ kayit
+    }).Name("api")
+
+    data, _ := json.MarshalIndent(app.GetRoute("api"), "", "  ")
+    fmt.Print(string(data))
+    // Cikti:
+    // {
+    //    "method": "GET",
+    //    "name": "api",
+    //    "path": "/api/*",
+    //    "params": [
+    //      "*1"
+    //    ]
+    // }
+
 
     log.Fatal(app.Listen(":3000"))
 }
@@ -541,6 +574,7 @@ Bu, Fiber topluluğu tarafından oluşturulan middleware'lerin bir listesidir, s
 -   [theArtechnology/fiber-inertia](https://github.com/theArtechnology/fiber-inertia)
 -   [aschenmaker/fiber-health-check](https://github.com/aschenmaker/fiber-health-check)
 -   [elastic/apmfiber](https://github.com/elastic/apm-agent-go/tree/master/module/apmfiber)
+-   [eozer/fiber_ldapauth](https://github.com/eozer/fiber_ldapauth)
 
 ## 👍 Destek
 
