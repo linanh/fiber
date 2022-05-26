@@ -18,7 +18,9 @@ import (
 	"io/ioutil"
 	"mime/multipart"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -398,6 +400,30 @@ func Test_Ctx_BodyParser(t *testing.T) {
 
 	testDecodeParserError("invalid-content-type", "")
 	testDecodeParserError(MIMEMultipartForm+`;boundary="b"`, "--b")
+
+	type CollectionQuery struct {
+		Data []Demo `query:"data"`
+	}
+
+	c.Request().Reset()
+	c.Request().Header.SetContentType(MIMEApplicationForm)
+	c.Request().SetBody([]byte("data[0][name]=john&data[1][name]=doe"))
+	c.Request().Header.SetContentLength(len(c.Body()))
+	cq := new(CollectionQuery)
+	utils.AssertEqual(t, nil, c.BodyParser(cq))
+	utils.AssertEqual(t, 2, len(cq.Data))
+	utils.AssertEqual(t, "john", cq.Data[0].Name)
+	utils.AssertEqual(t, "doe", cq.Data[1].Name)
+
+	c.Request().Reset()
+	c.Request().Header.SetContentType(MIMEApplicationForm)
+	c.Request().SetBody([]byte("data.0.name=john&data.1.name=doe"))
+	c.Request().Header.SetContentLength(len(c.Body()))
+	cq = new(CollectionQuery)
+	utils.AssertEqual(t, nil, c.BodyParser(cq))
+	utils.AssertEqual(t, 2, len(cq.Data))
+	utils.AssertEqual(t, "john", cq.Data[0].Name)
+	utils.AssertEqual(t, "doe", cq.Data[1].Name)
 }
 
 // go test -run Test_Ctx_BodyParser_WithSetParserDecoder
@@ -1028,6 +1054,24 @@ func Test_Ctx_Port(t *testing.T) {
 	utils.AssertEqual(t, "0", c.Port())
 }
 
+// go test -run Test_Ctx_PortInHandler
+func Test_Ctx_PortInHandler(t *testing.T) {
+	t.Parallel()
+	app := New()
+
+	app.Get("/port", func(c *Ctx) error {
+		return c.SendString(c.Port())
+	})
+
+	resp, err := app.Test(httptest.NewRequest(MethodGet, "/port", nil))
+	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, StatusOK, resp.StatusCode, "Status code")
+
+	body, err := ioutil.ReadAll(resp.Body)
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, "0", string(body))
+}
+
 // go test -run Test_Ctx_IP
 func Test_Ctx_IP(t *testing.T) {
 	t.Parallel()
@@ -1300,6 +1344,44 @@ func Test_Ctx_Params(t *testing.T) {
 	utils.AssertEqual(t, StatusOK, resp.StatusCode, "Status code")
 }
 
+// go test -race -run Test_Ctx_AllParams
+func Test_Ctx_AllParams(t *testing.T) {
+	t.Parallel()
+	app := New()
+	app.Get("/test/:user", func(c *Ctx) error {
+		utils.AssertEqual(t, map[string]string{"user": "john"}, c.AllParams())
+		return nil
+	})
+	app.Get("/test2/*", func(c *Ctx) error {
+		utils.AssertEqual(t, map[string]string{"*1": "im/a/cookie"}, c.AllParams())
+		return nil
+	})
+	app.Get("/test3/*/blafasel/*", func(c *Ctx) error {
+		utils.AssertEqual(t, map[string]string{"*1": "1111", "*2": "2222"}, c.AllParams())
+		return nil
+	})
+	app.Get("/test4/:optional?", func(c *Ctx) error {
+		utils.AssertEqual(t, map[string]string{"optional": ""}, c.AllParams())
+		return nil
+	})
+
+	resp, err := app.Test(httptest.NewRequest(MethodGet, "/test/john", nil))
+	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, StatusOK, resp.StatusCode, "Status code")
+
+	resp, err = app.Test(httptest.NewRequest(MethodGet, "/test2/im/a/cookie", nil))
+	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, StatusOK, resp.StatusCode, "Status code")
+
+	resp, err = app.Test(httptest.NewRequest(MethodGet, "/test3/1111/blafasel/2222", nil))
+	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, StatusOK, resp.StatusCode, "Status code")
+
+	resp, err = app.Test(httptest.NewRequest(MethodGet, "/test4", nil))
+	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, StatusOK, resp.StatusCode, "Status code")
+}
+
 // go test -v -run=^$ -bench=Benchmark_Ctx_Params -benchmem -count=4
 func Benchmark_Ctx_Params(b *testing.B) {
 	app := New()
@@ -1323,6 +1405,32 @@ func Benchmark_Ctx_Params(b *testing.B) {
 		res = c.Params("param4")
 	}
 	utils.AssertEqual(b, "awesome", res)
+}
+
+// go test -v -run=^$ -bench=Benchmark_Ctx_AllParams -benchmem -count=4
+func Benchmark_Ctx_AllParams(b *testing.B) {
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	c.route = &Route{
+		Params: []string{
+			"param1", "param2", "param3", "param4",
+		},
+	}
+	c.values = [maxParams]string{
+		"john", "doe", "is", "awesome",
+	}
+	var res map[string]string
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		res = c.AllParams()
+	}
+	utils.AssertEqual(b, map[string]string{"param1": "john",
+		"param2": "doe",
+		"param3": "is",
+		"param4": "awesome"},
+		res)
 }
 
 // go test -run Test_Ctx_Path
@@ -1801,7 +1909,7 @@ func Test_Ctx_SendFile_404(t *testing.T) {
 	t.Parallel()
 	app := New()
 	app.Get("/", func(c *Ctx) error {
-		err := c.SendFile("./john_dow.go/")
+		err := c.SendFile(filepath.FromSlash("john_dow.go/"))
 		utils.AssertEqual(t, false, err == nil)
 		return err
 	})
@@ -1815,22 +1923,44 @@ func Test_Ctx_SendFile_404(t *testing.T) {
 func Test_Ctx_SendFile_Immutable(t *testing.T) {
 	t.Parallel()
 	app := New()
-	app.Get("/:file", func(c *Ctx) error {
-		file := c.Params("file")
-		if err := c.SendFile("./.github/" + file + ".html"); err != nil {
+	var endpointsForTest []string
+	addEndpoint := func(file, endpoint string) {
+		endpointsForTest = append(endpointsForTest, endpoint)
+		app.Get(endpoint, func(c *Ctx) error {
+			if err := c.SendFile(file); err != nil {
+				utils.AssertEqual(t, nil, err)
+				return err
+			}
+			return c.SendStatus(200)
+		})
+	}
+
+	// relative paths
+	addEndpoint("./.github/index.html", "/relativeWithDot")
+	addEndpoint(filepath.FromSlash("./.github/index.html"), "/relativeOSWithDot")
+	addEndpoint(".github/index.html", "/relative")
+	addEndpoint(filepath.FromSlash(".github/index.html"), "/relativeOS")
+
+	// absolute paths
+	if path, err := filepath.Abs(".github/index.html"); err != nil {
+		utils.AssertEqual(t, nil, err)
+	} else {
+		addEndpoint(path, "/absolute")
+		addEndpoint(filepath.FromSlash(path), "/absoluteOS") // os related
+	}
+
+	for _, endpoint := range endpointsForTest {
+		t.Run(endpoint, func(t *testing.T) {
+			// 1st try
+			resp, err := app.Test(httptest.NewRequest("GET", endpoint, nil))
 			utils.AssertEqual(t, nil, err)
-		}
-		utils.AssertEqual(t, "index", file)
-		return c.SendString(file)
-	})
-	// 1st try
-	resp, err := app.Test(httptest.NewRequest("GET", "/index", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, StatusOK, resp.StatusCode)
-	// 2nd try
-	resp, err = app.Test(httptest.NewRequest("GET", "/index", nil))
-	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, StatusOK, resp.StatusCode)
+			utils.AssertEqual(t, StatusOK, resp.StatusCode)
+			// 2nd try
+			resp, err = app.Test(httptest.NewRequest("GET", endpoint, nil))
+			utils.AssertEqual(t, nil, err)
+			utils.AssertEqual(t, StatusOK, resp.StatusCode)
+		})
+	}
 }
 
 // go test -race -run Test_Ctx_SendFile_RestoreOriginalURL
@@ -1838,14 +1968,18 @@ func Test_Ctx_SendFile_RestoreOriginalURL(t *testing.T) {
 	t.Parallel()
 	app := New()
 	app.Get("/", func(c *Ctx) error {
-		originalURL := c.OriginalURL()
+		originalURL := utils.CopyString(c.OriginalURL())
 		err := c.SendFile("ctx.go")
 		utils.AssertEqual(t, originalURL, c.OriginalURL())
 		return err
 	})
 
-	_, err := app.Test(httptest.NewRequest("GET", "/?test=true", nil))
-	utils.AssertEqual(t, nil, err)
+	_, err1 := app.Test(httptest.NewRequest("GET", "/?test=true", nil))
+	// second request required to confirm with zero allocation
+	_, err2 := app.Test(httptest.NewRequest("GET", "/?test=true", nil))
+
+	utils.AssertEqual(t, nil, err1)
+	utils.AssertEqual(t, nil, err2)
 }
 
 // go test -run Test_Ctx_JSON
@@ -2052,6 +2186,28 @@ func Test_Ctx_RedirectToRouteWithParams(t *testing.T) {
 	utils.AssertEqual(t, "/user/fiber", string(c.Response().Header.Peek(HeaderLocation)))
 }
 
+// go test -run Test_Ctx_RedirectToRouteWithParams
+func Test_Ctx_RedirectToRouteWithQueries(t *testing.T) {
+	t.Parallel()
+	app := New()
+	app.Get("/user/:name", func(c *Ctx) error {
+		return c.JSON(c.Params("name"))
+	}).Name("user")
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+
+	c.RedirectToRoute("user", Map{
+		"name":    "fiber",
+		"queries": map[string]string{"data[0][name]": "john", "data[0][age]": "10", "test": "doe"},
+	})
+	utils.AssertEqual(t, 302, c.Response().StatusCode())
+	// analysis of query parameters with url parsing, since a map pass is always randomly ordered
+	location, err := url.Parse(string(c.Response().Header.Peek(HeaderLocation)))
+	utils.AssertEqual(t, nil, err, "url.Parse(location)")
+	utils.AssertEqual(t, "/user/fiber", location.Path)
+	utils.AssertEqual(t, url.Values{"data[0][name]": []string{"john"}, "data[0][age]": []string{"10"}, "test": []string{"doe"}}, location.Query())
+}
+
 // go test -run Test_Ctx_RedirectToRouteWithOptionalParams
 func Test_Ctx_RedirectToRouteWithOptionalParams(t *testing.T) {
 	t.Parallel()
@@ -2140,7 +2296,7 @@ func Test_Ctx_Render(t *testing.T) {
 	app := New()
 	c := app.AcquireCtx(&fasthttp.RequestCtx{})
 	defer app.ReleaseCtx(c)
-	err := c.Render("./.github/testdata/template.html", Map{
+	err := c.Render("./.github/testdata/index.tmpl", Map{
 		"Title": "Hello, World!",
 	})
 
@@ -2219,7 +2375,7 @@ func Test_Ctx_RenderWithoutLocals(t *testing.T) {
 
 	c.Locals("Title", "Hello, World!")
 	defer app.ReleaseCtx(c)
-	err := c.Render("./.github/testdata/template.html", Map{})
+	err := c.Render("./.github/testdata/index.tmpl", Map{})
 
 	buf := bytebufferpool.Get()
 	_, _ = buf.WriteString("overwrite")
@@ -2238,7 +2394,7 @@ func Test_Ctx_RenderWithLocals(t *testing.T) {
 
 	c.Locals("Title", "Hello, World!")
 	defer app.ReleaseCtx(c)
-	err := c.Render("./.github/testdata/template.html", Map{})
+	err := c.Render("./.github/testdata/index.tmpl", Map{})
 
 	buf := bytebufferpool.Get()
 	_, _ = buf.WriteString("overwrite")
@@ -2248,18 +2404,18 @@ func Test_Ctx_RenderWithLocals(t *testing.T) {
 	utils.AssertEqual(t, "<h1>Hello, World!</h1>", string(c.Response().Body()))
 
 }
-func Test_Ctx_RenderWithLocalsAndBinding(t *testing.T) {
+
+func Test_Ctx_RenderWithBind(t *testing.T) {
 	t.Parallel()
-	app := New(Config{
-		PassLocalsToViews: true,
-	})
+
+	app := New()
 	c := app.AcquireCtx(&fasthttp.RequestCtx{})
 
-	c.Locals("Title", "This is a test.")
-	defer app.ReleaseCtx(c)
-	err := c.Render("./.github/testdata/template.html", Map{
+	c.Bind(Map{
 		"Title": "Hello, World!",
 	})
+	defer app.ReleaseCtx(c)
+	err := c.Render("./.github/testdata/index.tmpl", Map{})
 
 	buf := bytebufferpool.Get()
 	_, _ = buf.WriteString("overwrite")
@@ -2267,6 +2423,177 @@ func Test_Ctx_RenderWithLocalsAndBinding(t *testing.T) {
 
 	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, "<h1>Hello, World!</h1>", string(c.Response().Body()))
+
+}
+
+func Test_Ctx_RenderWithBindLocals(t *testing.T) {
+	t.Parallel()
+
+	app := New(Config{
+		PassLocalsToViews: true,
+	})
+
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+
+	c.Bind(Map{
+		"Title": "Hello, World!",
+	})
+
+	c.Locals("Summary", "Test")
+
+	defer app.ReleaseCtx(c)
+	err := c.Render("./.github/testdata/template.tmpl", Map{})
+
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, "<h1>Hello, World! Test</h1>", string(c.Response().Body()))
+
+}
+
+func Test_Ctx_RenderWithLocalsAndBinding(t *testing.T) {
+	t.Parallel()
+	engine := &testTemplateEngine{}
+	err := engine.Load()
+	app := New(Config{
+		PassLocalsToViews: true,
+		Views:             engine,
+	})
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+
+	c.Locals("Title", "This is a test.")
+	defer app.ReleaseCtx(c)
+	err = c.Render("index.tmpl", Map{
+		"Title": "Hello, World!",
+	})
+
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, "<h1>Hello, World!</h1>", string(c.Response().Body()))
+}
+
+func Benchmark_Ctx_RenderWithLocalsAndBinding(b *testing.B) {
+	engine := &testTemplateEngine{}
+	err := engine.Load()
+	utils.AssertEqual(b, nil, err)
+	app := New(Config{
+		PassLocalsToViews: true,
+		Views:             engine,
+	})
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+
+	c.Bind(Map{
+		"Title": "Hello, World!",
+	})
+	c.Locals("Summary", "Test")
+
+	defer app.ReleaseCtx(c)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		err = c.Render("template.tmpl", Map{})
+	}
+
+	utils.AssertEqual(b, nil, err)
+	utils.AssertEqual(b, "<h1>Hello, World! Test</h1>", string(c.Response().Body()))
+}
+
+func Benchmark_Ctx_RedirectToRoute(b *testing.B) {
+	app := New()
+	app.Get("/user/:name", func(c *Ctx) error {
+		return c.JSON(c.Params("name"))
+	}).Name("user")
+
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		c.RedirectToRoute("user", Map{
+			"name": "fiber",
+		})
+	}
+
+	utils.AssertEqual(b, 302, c.Response().StatusCode())
+	utils.AssertEqual(b, "/user/fiber", string(c.Response().Header.Peek(HeaderLocation)))
+}
+
+func Benchmark_Ctx_RedirectToRouteWithQueries(b *testing.B) {
+	app := New()
+	app.Get("/user/:name", func(c *Ctx) error {
+		return c.JSON(c.Params("name"))
+	}).Name("user")
+
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		c.RedirectToRoute("user", Map{
+			"name":    "fiber",
+			"queries": map[string]string{"a": "a", "b": "b"},
+		})
+	}
+
+	utils.AssertEqual(b, 302, c.Response().StatusCode())
+	// analysis of query parameters with url parsing, since a map pass is always randomly ordered
+	location, err := url.Parse(string(c.Response().Header.Peek(HeaderLocation)))
+	utils.AssertEqual(b, nil, err, "url.Parse(location)")
+	utils.AssertEqual(b, "/user/fiber", location.Path)
+	utils.AssertEqual(b, url.Values{"a": []string{"a"}, "b": []string{"b"}}, location.Query())
+}
+
+func Benchmark_Ctx_RenderLocals(b *testing.B) {
+	engine := &testTemplateEngine{}
+	err := engine.Load()
+	utils.AssertEqual(b, nil, err)
+	app := New(Config{
+		PassLocalsToViews: true,
+	})
+	app.config.Views = engine
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+
+	c.Locals("Title", "Hello, World!")
+
+	defer app.ReleaseCtx(c)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		err = c.Render("index.tmpl", Map{})
+	}
+
+	utils.AssertEqual(b, nil, err)
+	utils.AssertEqual(b, "<h1>Hello, World!</h1>", string(c.Response().Body()))
+}
+
+func Benchmark_Ctx_RenderBind(b *testing.B) {
+	engine := &testTemplateEngine{}
+	err := engine.Load()
+	utils.AssertEqual(b, nil, err)
+	app := New()
+	app.config.Views = engine
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+
+	c.Bind(Map{
+		"Title": "Hello, World!",
+	})
+
+	defer app.ReleaseCtx(c)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		err = c.Render("index.tmpl", Map{})
+	}
+
+	utils.AssertEqual(b, nil, err)
+	utils.AssertEqual(b, "<h1>Hello, World!</h1>", string(c.Response().Body()))
 }
 
 // go test -run Test_Ctx_RestartRouting
@@ -2410,6 +2737,20 @@ func Benchmark_Ctx_Get_Location_From_Route(b *testing.B) {
 	for n := 0; n < b.N; n++ {
 		c.getLocationFromRoute(app.GetRoute("User"), Map{"name": "fiber"})
 	}
+}
+
+// go test -run Test_Ctx_Get_Location_From_Route_name
+func Test_Ctx_Get_Location_From_Route_name(t *testing.T) {
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	app.Get("/user/:name", func(c *Ctx) error {
+		return c.SendString(c.Params("name"))
+	}).Name("User")
+
+	location, err := c.GetRouteURL("User", Map{"name": "fiber"})
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, "/user/fiber", location)
 }
 
 type errorTemplateEngine struct{}
@@ -2673,6 +3014,30 @@ func Benchmark_Ctx_Write(b *testing.B) {
 	}
 }
 
+// go test -run Test_Ctx_Writef
+func Test_Ctx_Writef(t *testing.T) {
+	t.Parallel()
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	world := "World!"
+	c.Writef("Hello, %s", world)
+	utils.AssertEqual(t, "Hello, World!", string(c.Response().Body()))
+}
+
+// go test -v -run=^$ -bench=Benchmark_Ctx_Writef -benchmem -count=4
+func Benchmark_Ctx_Writef(b *testing.B) {
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	world := "World!"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		c.Writef("Hello, %s", world)
+	}
+}
+
 // go test -run Test_Ctx_WriteString
 func Test_Ctx_WriteString(t *testing.T) {
 	t.Parallel()
@@ -2787,6 +3152,14 @@ func Test_Ctx_QueryParser(t *testing.T) {
 	rq := new(RequiredQuery)
 	c.Request().URI().SetQueryString("")
 	utils.AssertEqual(t, "name is empty", c.QueryParser(rq).Error())
+
+	type ArrayQuery struct {
+		Data []string
+	}
+	aq := new(ArrayQuery)
+	c.Request().URI().SetQueryString("data[]=john&data[]=doe")
+	utils.AssertEqual(t, nil, c.QueryParser(aq))
+	utils.AssertEqual(t, 2, len(aq.Data))
 }
 
 // go test -run Test_Ctx_QueryParser_WithSetParserDecoder -v
@@ -2915,6 +3288,33 @@ func Test_Ctx_QueryParser_Schema(t *testing.T) {
 	utils.AssertEqual(t, nil, c.QueryParser(n))
 	utils.AssertEqual(t, 3, n.Value)
 	utils.AssertEqual(t, 0, n.Next.Value)
+
+	type Person struct {
+		Name string `query:"name"`
+		Age  int    `query:"age"`
+	}
+
+	type CollectionQuery struct {
+		Data []Person `query:"data"`
+	}
+
+	c.Request().URI().SetQueryString("data[0][name]=john&data[0][age]=10&data[1][name]=doe&data[1][age]=12")
+	cq := new(CollectionQuery)
+	utils.AssertEqual(t, nil, c.QueryParser(cq))
+	utils.AssertEqual(t, 2, len(cq.Data))
+	utils.AssertEqual(t, "john", cq.Data[0].Name)
+	utils.AssertEqual(t, 10, cq.Data[0].Age)
+	utils.AssertEqual(t, "doe", cq.Data[1].Name)
+	utils.AssertEqual(t, 12, cq.Data[1].Age)
+
+	c.Request().URI().SetQueryString("data.0.name=john&data.0.age=10&data.1.name=doe&data.1.age=12")
+	cq = new(CollectionQuery)
+	utils.AssertEqual(t, nil, c.QueryParser(cq))
+	utils.AssertEqual(t, 2, len(cq.Data))
+	utils.AssertEqual(t, "john", cq.Data[0].Name)
+	utils.AssertEqual(t, 10, cq.Data[0].Age)
+	utils.AssertEqual(t, "doe", cq.Data[1].Name)
+	utils.AssertEqual(t, 12, cq.Data[1].Age)
 }
 
 // go test -run Test_Ctx_ReqHeaderParser -v
@@ -3174,6 +3574,34 @@ func Benchmark_Ctx_QueryParser(b *testing.B) {
 		c.QueryParser(q)
 	}
 	utils.AssertEqual(b, nil, c.QueryParser(q))
+}
+
+// go test -v  -run=^$ -bench=Benchmark_Ctx_parseQuery -benchmem -count=4
+func Benchmark_Ctx_parseQuery(b *testing.B) {
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	type Person struct {
+		Name string `query:"name"`
+		Age  int    `query:"age"`
+	}
+
+	type CollectionQuery struct {
+		Data []Person `query:"data"`
+	}
+
+	c.Request().SetBody([]byte(``))
+	c.Request().Header.SetContentType("")
+	c.Request().URI().SetQueryString("data[0][name]=john&data[0][age]=10")
+	cq := new(CollectionQuery)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		c.QueryParser(cq)
+	}
+
+	utils.AssertEqual(b, nil, c.QueryParser(cq))
 }
 
 // go test -v  -run=^$ -bench=Benchmark_Ctx_QueryParser_Comma -benchmem -count=4

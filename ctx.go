@@ -7,6 +7,7 @@ package fiber
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -24,7 +25,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2/internal/bytebufferpool"
-	"github.com/gofiber/fiber/v2/internal/go-json"
+	"github.com/gofiber/fiber/v2/internal/dictpool"
 	"github.com/gofiber/fiber/v2/internal/schema"
 	"github.com/gofiber/fiber/v2/utils"
 	"github.com/valyala/fasthttp"
@@ -62,6 +63,7 @@ type Ctx struct {
 	values              [maxParams]string    // Route parameter values
 	fasthttp            *fasthttp.RequestCtx // Reference to *fasthttp.RequestCtx
 	matched             bool                 // Non use route matched
+	viewBindMap         *dictpool.Dict       // Default view map to bind template engine
 }
 
 // Range data for c.Range
@@ -137,6 +139,9 @@ func (app *App) ReleaseCtx(c *Ctx) {
 	// Reset values
 	c.route = nil
 	c.fasthttp = nil
+	if c.viewBindMap != nil {
+		dictpool.ReleaseDict(c.viewBindMap)
+	}
 	app.pool.Put(c)
 }
 
@@ -336,9 +341,19 @@ func (c *Ctx) BodyParser(out interface{}) error {
 	}
 	if strings.HasPrefix(ctype, MIMEApplicationForm) {
 		data := make(map[string][]string)
+		var err error
+
 		c.fasthttp.PostArgs().VisitAll(func(key, val []byte) {
+			if err != nil {
+				return
+			}
+
 			k := utils.UnsafeString(key)
 			v := utils.UnsafeString(val)
+
+			if strings.Contains(k, "[") {
+				k, err = parseParamSquareBrackets(k)
+			}
 
 			if strings.Contains(v, ",") && equalFieldType(out, reflect.Slice, k) {
 				values := strings.Split(v, ",")
@@ -828,11 +843,22 @@ func (c *Ctx) Params(key string, defaultValue ...string) string {
 	return defaultString("", defaultValue)
 }
 
+// Params is used to get all route parameters.
+// Using Params method to get params.
+func (c *Ctx) AllParams() map[string]string {
+	params := make(map[string]string, len(c.route.Params))
+	for _, param := range c.route.Params {
+		params[param] = c.Params(param)
+	}
+
+	return params
+}
+
 // ParamsInt is used to get an integer from the route parameters
 // it defaults to zero if the parameter is not found or if the
 // parameter cannot be converted to an integer
-// If a default value is given, it will returb that value in case the param
-// doesn't exist or cannot be converted to an integrer
+// If a default value is given, it will return that value in case the param
+// doesn't exist or cannot be converted to an integer
 func (c *Ctx) ParamsInt(key string, defaultValue ...int) (int, error) {
 	// Use Atoi to convert the param to an int or return zero and an error
 	value, err := strconv.Atoi(c.Params(key))
@@ -902,9 +928,19 @@ func (c *Ctx) Query(key string, defaultValue ...string) string {
 // QueryParser binds the query string to a struct.
 func (c *Ctx) QueryParser(out interface{}) error {
 	data := make(map[string][]string)
+	var err error
+
 	c.fasthttp.QueryArgs().VisitAll(func(key, val []byte) {
+		if err != nil {
+			return
+		}
+
 		k := utils.UnsafeString(key)
 		v := utils.UnsafeString(val)
+
+		if strings.Contains(k, "[") {
+			k, err = parseParamSquareBrackets(k)
+		}
 
 		if strings.Contains(v, ",") && equalFieldType(out, reflect.Slice, k) {
 			values := strings.Split(v, ",")
@@ -917,7 +953,37 @@ func (c *Ctx) QueryParser(out interface{}) error {
 
 	})
 
+	if err != nil {
+		return err
+	}
+
 	return c.parseToStruct(queryTag, out, data)
+}
+
+func parseParamSquareBrackets(k string) (string, error) {
+	bb := bytebufferpool.Get()
+	defer bytebufferpool.Put(bb)
+
+	kbytes := []byte(k)
+
+	for i, b := range kbytes {
+
+		if b == '[' && kbytes[i+1] != ']' {
+			if err := bb.WriteByte('.'); err != nil {
+				return "", err
+			}
+		}
+
+		if b == '[' || b == ']' {
+			continue
+		}
+
+		if err := bb.WriteByte(b); err != nil {
+			return "", err
+		}
+	}
+
+	return bb.String(), nil
 }
 
 // ReqHeaderParser binds the request header strings to a struct.
@@ -1060,7 +1126,21 @@ func (c *Ctx) Redirect(location string, status ...int) error {
 	return nil
 }
 
-// get URL location from route using parameters
+// Add vars to default view var map binding to template engine.
+// Variables are read by the Render method and may be overwritten.
+func (c *Ctx) Bind(vars Map) error {
+	// init viewBindMap - lazy map
+	if c.viewBindMap == nil {
+		c.viewBindMap = dictpool.AcquireDict()
+	}
+	for k, v := range vars {
+		c.viewBindMap.Set(k, v)
+	}
+
+	return nil
+}
+
+// getLocationFromRoute get URL location from route using parameters
 func (c *Ctx) getLocationFromRoute(route Route, params Map) (string, error) {
 	buf := bytebufferpool.Get()
 	for _, segment := range route.routeParser.segs {
@@ -1085,12 +1165,36 @@ func (c *Ctx) getLocationFromRoute(route Route, params Map) (string, error) {
 	return location, nil
 }
 
+// GetRouteURL generates URLs to named routes, with parameters. URLs are relative, for example: "/user/1831"
+func (c *Ctx) GetRouteURL(routeName string, params Map) (string, error) {
+	return c.getLocationFromRoute(c.App().GetRoute(routeName), params)
+}
+
 // RedirectToRoute to the Route registered in the app with appropriate parameters
 // If status is not specified, status defaults to 302 Found.
+// If you want to send queries to route, you must add "queries" key typed as map[string]string to params.
 func (c *Ctx) RedirectToRoute(routeName string, params Map, status ...int) error {
 	location, err := c.getLocationFromRoute(c.App().GetRoute(routeName), params)
 	if err != nil {
 		return err
+	}
+
+	// Check queries
+	if queries, ok := params["queries"].(map[string]string); ok {
+		queryText := bytebufferpool.Get()
+		defer bytebufferpool.Put(queryText)
+
+		i := 1
+		for k, v := range queries {
+			_, _ = queryText.WriteString(k + "=" + v)
+
+			if i != len(queries) {
+				_, _ = queryText.WriteString("&")
+			}
+			i++
+		}
+
+		return c.Redirect(location+"?"+queryText.String(), status...)
 	}
 	return c.Redirect(location, status...)
 }
@@ -1113,25 +1217,8 @@ func (c *Ctx) Render(name string, bind interface{}, layouts ...string) error {
 	buf := bytebufferpool.Get()
 	defer bytebufferpool.Put(buf)
 
-	// Check if the PassLocalsToViews option is enabled (By default it is disabled)
-	if c.app.config.PassLocalsToViews {
-		// Safely cast the bind interface to a map
-		bindMap, ok := bind.(Map)
-		// Check if the bind is a map
-		if ok {
-			// Loop through each local and set it in the map
-			c.fasthttp.VisitUserValues(func(key []byte, val interface{}) {
-				// check if bindMap doesn't contain the key
-				if _, ok := bindMap[string(key)]; !ok {
-					// Set the key and value in the bindMap
-					bindMap[string(key)] = val
-				}
-			})
-			// set the original bind to the map
-			bind = bindMap
-		}
-
-	}
+	// Pass-locals-to-views & bind
+	c.renderExtensions(bind)
 
 	rendered := false
 	for prefix, app := range c.app.appList {
@@ -1177,6 +1264,29 @@ func (c *Ctx) Render(name string, bind interface{}, layouts ...string) error {
 	c.fasthttp.Response.SetBody(buf.Bytes())
 	// Return err if exist
 	return err
+}
+
+func (c *Ctx) renderExtensions(bind interface{}) {
+	if bindMap, ok := bind.(Map); ok {
+		// Bind view map
+		if c.viewBindMap != nil {
+			for _, v := range c.viewBindMap.D {
+				bindMap[v.Key] = v.Value
+			}
+		}
+
+		// Check if the PassLocalsToViews option is enabled (by default it is disabled)
+		if c.app.config.PassLocalsToViews {
+			// Loop through each local and set it in the map
+			c.fasthttp.VisitUserValues(func(key []byte, val interface{}) {
+				// check if bindMap doesn't contain the key
+				if _, ok := bindMap[utils.UnsafeString(key)]; !ok {
+					// Set the key and value in the bindMap
+					bindMap[utils.UnsafeString(key)] = val
+				}
+			})
+		}
+	}
 }
 
 // Route returns the matched Route struct.
@@ -1240,10 +1350,11 @@ func (c *Ctx) SendFile(file string, compress ...bool) error {
 	// Save the filename, we will need it in the error message if the file isn't found
 	filename := file
 
-	// https://github.com/valyala/fasthttp/blob/master/fs.go#L81
+	// https://github.com/valyala/fasthttp/blob/c7576cc10cabfc9c993317a2d3f8355497bea156/fs.go#L129-L134
 	sendFileOnce.Do(func() {
 		sendFileFS = &fasthttp.FS{
-			Root:                 "/",
+			Root:                 "",
+			AllowEmptyRoot:       true,
 			GenerateIndexPages:   false,
 			AcceptByteRange:      true,
 			Compress:             true,
@@ -1261,13 +1372,16 @@ func (c *Ctx) SendFile(file string, compress ...bool) error {
 	c.pathOriginal = utils.CopyString(c.pathOriginal)
 	// Disable compression
 	if len(compress) == 0 || !compress[0] {
-		// https://github.com/valyala/fasthttp/blob/master/fs.go#L46
+		// https://github.com/valyala/fasthttp/blob/7cc6f4c513f9e0d3686142e0a1a5aa2f76b3194a/fs.go#L55
 		c.fasthttp.Request.Header.Del(HeaderAcceptEncoding)
 	}
-	// https://github.com/valyala/fasthttp/blob/master/fs.go#L85
-	if len(file) == 0 || file[0] != '/' {
-		hasTrailingSlash := len(file) > 0 && file[len(file)-1] == '/'
+	// copy of https://github.com/valyala/fasthttp/blob/7cc6f4c513f9e0d3686142e0a1a5aa2f76b3194a/fs.go#L103-L121 with small adjustments
+	if len(file) == 0 || !filepath.IsAbs(file) {
+		// extend relative path to absolute path
+		hasTrailingSlash := len(file) > 0 && (file[len(file)-1] == '/' || file[len(file)-1] == '\\')
+
 		var err error
+		file = filepath.FromSlash(file)
 		if file, err = filepath.Abs(file); err != nil {
 			return err
 		}
@@ -1275,8 +1389,12 @@ func (c *Ctx) SendFile(file string, compress ...bool) error {
 			file += "/"
 		}
 	}
+	// convert the path to forward slashes regardless the OS in order to set the URI properly
+	// the handler will convert back to OS path separator before opening the file
+	file = filepath.ToSlash(file)
+
 	// Restore the original requested URL
-	originalURL := c.OriginalURL()
+	originalURL := utils.CopyString(c.OriginalURL())
 	defer c.fasthttp.Request.SetRequestURI(originalURL)
 	// Set new URI for fileHandler
 	c.fasthttp.Request.SetRequestURI(file)
@@ -1402,6 +1520,11 @@ func (c *Ctx) Vary(fields ...string) {
 func (c *Ctx) Write(p []byte) (int, error) {
 	c.fasthttp.Response.AppendBody(p)
 	return len(p), nil
+}
+
+// Writef appends f & a into response body writer.
+func (c *Ctx) Writef(f string, a ...interface{}) (int, error) {
+	return fmt.Fprintf(c.fasthttp.Response.BodyWriter(), f, a...)
 }
 
 // WriteString appends s to response body.
