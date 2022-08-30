@@ -12,6 +12,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -424,6 +426,29 @@ func Test_Ctx_BodyParser(t *testing.T) {
 	utils.AssertEqual(t, 2, len(cq.Data))
 	utils.AssertEqual(t, "john", cq.Data[0].Name)
 	utils.AssertEqual(t, "doe", cq.Data[1].Name)
+}
+
+func Test_Ctx_ParamParser(t *testing.T) {
+	t.Parallel()
+	app := New()
+	app.Get("/test1/userId/role/:roleId", func(ctx *Ctx) error {
+		type Demo struct {
+			UserID uint `params:"userId"`
+			RoleID uint `params:"roleId"`
+		}
+		var (
+			d = new(Demo)
+		)
+		if err := ctx.ParamsParser(d); err != nil {
+			t.Fatal(err)
+		}
+		utils.AssertEqual(t, uint(111), d.UserID)
+		utils.AssertEqual(t, uint(222), d.RoleID)
+		return nil
+	})
+	app.Test(httptest.NewRequest(MethodGet, "/test1/111/role/222", nil))
+	app.Test(httptest.NewRequest(MethodGet, "/test2/111/role/222", nil))
+
 }
 
 // go test -run Test_Ctx_BodyParser_WithSetParserDecoder
@@ -1075,19 +1100,86 @@ func Test_Ctx_PortInHandler(t *testing.T) {
 // go test -run Test_Ctx_IP
 func Test_Ctx_IP(t *testing.T) {
 	t.Parallel()
+
 	app := New()
 	c := app.AcquireCtx(&fasthttp.RequestCtx{})
 	defer app.ReleaseCtx(c)
+
+	// default behaviour will return the remote IP from the stack
+	utils.AssertEqual(t, "0.0.0.0", c.IP())
+
+	// X-Forwarded-For is set, but it is ignored because proxyHeader is not set
+	c.Request().Header.Set(HeaderXForwardedFor, "0.0.0.1")
 	utils.AssertEqual(t, "0.0.0.0", c.IP())
 }
 
 // go test -run Test_Ctx_IP_ProxyHeader
 func Test_Ctx_IP_ProxyHeader(t *testing.T) {
 	t.Parallel()
-	app := New(Config{ProxyHeader: "Real-Ip"})
-	c := app.AcquireCtx(&fasthttp.RequestCtx{})
-	defer app.ReleaseCtx(c)
-	utils.AssertEqual(t, "", c.IP())
+
+	// make sure that the same behaviour exists for different proxy header names
+	proxyHeaderNames := []string{"Real-Ip", HeaderXForwardedFor}
+
+	for _, proxyHeaderName := range proxyHeaderNames {
+		app := New(Config{ProxyHeader: proxyHeaderName})
+		c := app.AcquireCtx(&fasthttp.RequestCtx{})
+
+		c.Request().Header.Set(proxyHeaderName, "0.0.0.1")
+		utils.AssertEqual(t, "0.0.0.1", c.IP())
+
+		// without IP validation we return the full string
+		c.Request().Header.Set(proxyHeaderName, "0.0.0.1, 0.0.0.2")
+		utils.AssertEqual(t, "0.0.0.1, 0.0.0.2", c.IP())
+
+		// without IP validation we return invalid IPs
+		c.Request().Header.Set(proxyHeaderName, "invalid, 0.0.0.2, 0.0.0.3")
+		utils.AssertEqual(t, "invalid, 0.0.0.2, 0.0.0.3", c.IP())
+
+		// when proxy header is enabled but the value is empty, without IP validation we return an empty string
+		c.Request().Header.Set(proxyHeaderName, "")
+		utils.AssertEqual(t, "", c.IP())
+
+		// without IP validation we return an invalid IP
+		c.Request().Header.Set(proxyHeaderName, "not-valid-ip")
+		utils.AssertEqual(t, "not-valid-ip", c.IP())
+
+		app.ReleaseCtx(c)
+	}
+}
+
+// go test -run Test_Ctx_IP_ProxyHeader
+func Test_Ctx_IP_ProxyHeader_With_IP_Validation(t *testing.T) {
+	t.Parallel()
+
+	// make sure that the same behaviour exists for different proxy header names
+	proxyHeaderNames := []string{"Real-Ip", HeaderXForwardedFor}
+
+	for _, proxyHeaderName := range proxyHeaderNames {
+		app := New(Config{EnableIPValidation: true, ProxyHeader: proxyHeaderName})
+		c := app.AcquireCtx(&fasthttp.RequestCtx{})
+
+		// when proxy header & validation is enabled and the value is a valid IP, we return it
+		c.Request().Header.Set(proxyHeaderName, "0.0.0.1")
+		utils.AssertEqual(t, "0.0.0.1", c.IP())
+
+		// when proxy header & validation is enabled and the value is a list of IPs, we return the first valid IP
+		c.Request().Header.Set(proxyHeaderName, "0.0.0.1, 0.0.0.2")
+		utils.AssertEqual(t, "0.0.0.1", c.IP())
+
+		c.Request().Header.Set(proxyHeaderName, "invalid, 0.0.0.2, 0.0.0.3")
+		utils.AssertEqual(t, "0.0.0.2", c.IP())
+
+		// when proxy header & validation is enabled but the value is empty, we will ignore the header
+		c.Request().Header.Set(proxyHeaderName, "")
+		utils.AssertEqual(t, "0.0.0.0", c.IP())
+
+		// when proxy header & validation is enabled but the value is not an IP, we will ignore the header
+		// and return the IP of the caller
+		c.Request().Header.Set(proxyHeaderName, "not-valid-ip")
+		utils.AssertEqual(t, "0.0.0.0", c.IP())
+
+		app.ReleaseCtx(c)
+	}
 }
 
 // go test -run Test_Ctx_IP_UntrustedProxy
@@ -1116,13 +1208,64 @@ func Test_Ctx_IPs(t *testing.T) {
 	app := New()
 	c := app.AcquireCtx(&fasthttp.RequestCtx{})
 	defer app.ReleaseCtx(c)
+
+	// normal happy path test case
 	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.1, 127.0.0.2, 127.0.0.3")
 	utils.AssertEqual(t, []string{"127.0.0.1", "127.0.0.2", "127.0.0.3"}, c.IPs())
 
+	// inconsistent space formatting
 	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.1,127.0.0.2  ,127.0.0.3")
 	utils.AssertEqual(t, []string{"127.0.0.1", "127.0.0.2", "127.0.0.3"}, c.IPs())
 
+	// invalid IPs are allowed to be returned
+	c.Request().Header.Set(HeaderXForwardedFor, "invalid, 127.0.0.1, 127.0.0.2")
+	utils.AssertEqual(t, []string{"invalid", "127.0.0.1", "127.0.0.2"}, c.IPs())
+	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.1, invalid, 127.0.0.2")
+	utils.AssertEqual(t, []string{"127.0.0.1", "invalid", "127.0.0.2"}, c.IPs())
+
+	// ensure that the ordering of IPs in the header is maintained
+	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.3, 127.0.0.1, 127.0.0.2")
+	utils.AssertEqual(t, []string{"127.0.0.3", "127.0.0.1", "127.0.0.2"}, c.IPs())
+
+	// empty header
 	c.Request().Header.Set(HeaderXForwardedFor, "")
+	utils.AssertEqual(t, 0, len(c.IPs()))
+
+	// missing header
+	c.Request()
+	utils.AssertEqual(t, 0, len(c.IPs()))
+}
+
+func Test_Ctx_IPs_With_IP_Validation(t *testing.T) {
+	t.Parallel()
+	app := New(Config{EnableIPValidation: true})
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+
+	// normal happy path test case
+	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.1, 127.0.0.2, 127.0.0.3")
+	utils.AssertEqual(t, []string{"127.0.0.1", "127.0.0.2", "127.0.0.3"}, c.IPs())
+
+	// inconsistent space formatting
+	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.1,127.0.0.2  ,127.0.0.3")
+	utils.AssertEqual(t, []string{"127.0.0.1", "127.0.0.2", "127.0.0.3"}, c.IPs())
+
+	// invalid IPs are in the header
+	c.Request().Header.Set(HeaderXForwardedFor, "invalid, 127.0.0.1, 127.0.0.2")
+	utils.AssertEqual(t, []string{"127.0.0.1", "127.0.0.2"}, c.IPs())
+	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.1, invalid, 127.0.0.2")
+	utils.AssertEqual(t, []string{"127.0.0.1", "127.0.0.2"}, c.IPs())
+
+	// ensure that the ordering of IPs in the header is maintained
+	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.3, 127.0.0.1, 127.0.0.2")
+	utils.AssertEqual(t, []string{"127.0.0.3", "127.0.0.1", "127.0.0.2"}, c.IPs())
+
+	// empty header
+	c.Request().Header.Set(HeaderXForwardedFor, "")
+	utils.AssertEqual(t, 0, len(c.IPs()))
+
+	// missing header
+	c.Request()
 	utils.AssertEqual(t, 0, len(c.IPs()))
 }
 
@@ -1131,14 +1274,70 @@ func Benchmark_Ctx_IPs(b *testing.B) {
 	app := New()
 	c := app.AcquireCtx(&fasthttp.RequestCtx{})
 	defer app.ReleaseCtx(c)
-	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.1, 127.0.0.1, 127.0.0.1")
+	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.1, invalid, 127.0.0.1")
 	var res []string
 	b.ReportAllocs()
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		res = c.IPs()
 	}
-	utils.AssertEqual(b, []string{"127.0.0.1", "127.0.0.1", "127.0.0.1"}, res)
+	utils.AssertEqual(b, []string{"127.0.0.1", "invalid", "127.0.0.1"}, res)
+}
+
+func Benchmark_Ctx_IPs_With_IP_Validation(b *testing.B) {
+	app := New(Config{EnableIPValidation: true})
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.1, invalid, 127.0.0.1")
+	var res []string
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		res = c.IPs()
+	}
+	utils.AssertEqual(b, []string{"127.0.0.1", "127.0.0.1"}, res)
+}
+
+func Benchmark_Ctx_IP_With_ProxyHeader(b *testing.B) {
+	app := New(Config{ProxyHeader: HeaderXForwardedFor})
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.1")
+	var res string
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		res = c.IP()
+	}
+	utils.AssertEqual(b, "127.0.0.1", res)
+}
+
+func Benchmark_Ctx_IP_With_ProxyHeader_and_IP_Validation(b *testing.B) {
+	app := New(Config{ProxyHeader: HeaderXForwardedFor, EnableIPValidation: true})
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	c.Request().Header.Set(HeaderXForwardedFor, "127.0.0.1")
+	var res string
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		res = c.IP()
+	}
+	utils.AssertEqual(b, "127.0.0.1", res)
+}
+
+func Benchmark_Ctx_IP(b *testing.B) {
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	c.Request()
+	var res string
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		res = c.IP()
+	}
+	utils.AssertEqual(b, "0.0.0.0", res)
 }
 
 // go test -run Test_Ctx_Is
@@ -1222,6 +1421,67 @@ func Test_Ctx_Method(t *testing.T) {
 
 	c.Method("MethodInvalid")
 	utils.AssertEqual(t, MethodPost, c.Method())
+}
+
+// go test -run Test_Ctx_ClientHelloInfo
+func Test_Ctx_ClientHelloInfo(t *testing.T) {
+	t.Parallel()
+	app := New()
+	app.Get("/ServerName", func(c *Ctx) error {
+		result := c.ClientHelloInfo()
+		if result != nil {
+			return c.SendString(result.ServerName)
+		}
+
+		return c.SendString("ClientHelloInfo is nil")
+	})
+	app.Get("/SignatureSchemes", func(c *Ctx) error {
+		result := c.ClientHelloInfo()
+		if result != nil {
+			return c.JSON(result.SignatureSchemes)
+		}
+
+		return c.SendString("ClientHelloInfo is nil")
+	})
+	app.Get("/SupportedVersions", func(c *Ctx) error {
+		result := c.ClientHelloInfo()
+		if result != nil {
+			return c.JSON(result.SupportedVersions)
+		}
+
+		return c.SendString("ClientHelloInfo is nil")
+	})
+
+	// Test without TLS handler
+	resp, _ := app.Test(httptest.NewRequest(MethodGet, "/ServerName", nil))
+	body, _ := ioutil.ReadAll(resp.Body)
+	utils.AssertEqual(t, []byte("ClientHelloInfo is nil"), body)
+
+	// Test with TLS Handler
+	const (
+		PSSWithSHA256 = 0x0804
+		VersionTLS13  = 0x0304
+	)
+	app.tlsHandler = &TLSHandler{clientHelloInfo: &tls.ClientHelloInfo{
+		ServerName:        "example.golang",
+		SignatureSchemes:  []tls.SignatureScheme{PSSWithSHA256},
+		SupportedVersions: []uint16{VersionTLS13},
+	}}
+
+	// Test ServerName
+	resp, _ = app.Test(httptest.NewRequest(MethodGet, "/ServerName", nil))
+	body, _ = ioutil.ReadAll(resp.Body)
+	utils.AssertEqual(t, []byte("example.golang"), body)
+
+	// Test SignatureSchemes
+	resp, _ = app.Test(httptest.NewRequest(MethodGet, "/SignatureSchemes", nil))
+	body, _ = ioutil.ReadAll(resp.Body)
+	utils.AssertEqual(t, "["+strconv.Itoa(PSSWithSHA256)+"]", string(body))
+
+	// Test SupportedVersions
+	resp, _ = app.Test(httptest.NewRequest(MethodGet, "/SupportedVersions", nil))
+	body, _ = ioutil.ReadAll(resp.Body)
+	utils.AssertEqual(t, "["+strconv.Itoa(VersionTLS13)+"]", string(body))
 }
 
 // go test -run Test_Ctx_InvalidMethod
@@ -1327,6 +1587,11 @@ func Test_Ctx_Params(t *testing.T) {
 		utils.AssertEqual(t, "", c.Params("optional"))
 		return nil
 	})
+	app.Get("/test5/:id/:Id", func(c *Ctx) error {
+		utils.AssertEqual(t, "first", c.Params("id"))
+		utils.AssertEqual(t, "first", c.Params("Id"))
+		return nil
+	})
 	resp, err := app.Test(httptest.NewRequest(MethodGet, "/test/john", nil))
 	utils.AssertEqual(t, nil, err, "app.Test(req)")
 	utils.AssertEqual(t, StatusOK, resp.StatusCode, "Status code")
@@ -1341,6 +1606,32 @@ func Test_Ctx_Params(t *testing.T) {
 
 	resp, err = app.Test(httptest.NewRequest(MethodGet, "/test4", nil))
 	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, StatusOK, resp.StatusCode, "Status code")
+
+	resp, err = app.Test(httptest.NewRequest(MethodGet, "/test5/first/second", nil))
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, StatusOK, resp.StatusCode, "Status code")
+}
+
+func Test_Ctx_Params_Case_Sensitive(t *testing.T) {
+	t.Parallel()
+	app := New(Config{CaseSensitive: true})
+	app.Get("/test/:User", func(c *Ctx) error {
+		utils.AssertEqual(t, "john", c.Params("User"))
+		utils.AssertEqual(t, "", c.Params("user"))
+		return nil
+	})
+	app.Get("/test2/:id/:Id", func(c *Ctx) error {
+		utils.AssertEqual(t, "first", c.Params("id"))
+		utils.AssertEqual(t, "second", c.Params("Id"))
+		return nil
+	})
+	resp, err := app.Test(httptest.NewRequest(MethodGet, "/test/john", nil))
+	utils.AssertEqual(t, nil, err, "app.Test(req)")
+	utils.AssertEqual(t, StatusOK, resp.StatusCode, "Status code")
+
+	resp, err = app.Test(httptest.NewRequest(MethodGet, "/test2/first/second", nil))
+	utils.AssertEqual(t, nil, err)
 	utils.AssertEqual(t, StatusOK, resp.StatusCode, "Status code")
 }
 
@@ -1431,6 +1722,36 @@ func Benchmark_Ctx_AllParams(b *testing.B) {
 		"param3": "is",
 		"param4": "awesome"},
 		res)
+}
+
+// go test -v -run=^$ -bench=Benchmark_Ctx_ParamsParse -benchmem -count=4
+func Benchmark_Ctx_ParamsParse(b *testing.B) {
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	c.route = &Route{
+		Params: []string{
+			"param1", "param2", "param3", "param4",
+		},
+	}
+	c.values = [maxParams]string{
+		"john", "doe", "is", "awesome",
+	}
+	var res struct {
+		Param1 string `params:"param1"`
+		Param2 string `params:"param2"`
+		Param3 string `params:"param3"`
+		Param4 string `params:"param4"`
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		c.ParamsParser(&res)
+	}
+	utils.AssertEqual(b, "john", res.Param1)
+	utils.AssertEqual(b, "doe", res.Param2)
+	utils.AssertEqual(b, "is", res.Param3)
+	utils.AssertEqual(b, "awesome", res.Param4)
 }
 
 // go test -run Test_Ctx_Path
@@ -2079,6 +2400,65 @@ func Benchmark_Ctx_JSONP(b *testing.B) {
 	}
 	utils.AssertEqual(b, nil, err)
 	utils.AssertEqual(b, `emit({"Name":"Grame","Age":20});`, string(c.Response().Body()))
+}
+
+// go test -run Test_Ctx_XML
+func Test_Ctx_XML(t *testing.T) {
+	t.Parallel()
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+
+	utils.AssertEqual(t, true, c.JSON(complex(1, 1)) != nil)
+
+	type xmlResult struct {
+		XMLName xml.Name `xml:"Users"`
+		Names   []string `xml:"Names"`
+		Ages    []int    `xml:"Ages"`
+	}
+
+	c.XML(xmlResult{
+		Names: []string{"Grame", "John"},
+		Ages:  []int{1, 12, 20},
+	})
+
+	utils.AssertEqual(t, `<Users><Names>Grame</Names><Names>John</Names><Ages>1</Ages><Ages>12</Ages><Ages>20</Ages></Users>`, string(c.Response().Body()))
+	utils.AssertEqual(t, "application/xml", string(c.Response().Header.Peek("content-type")))
+
+	testEmpty := func(v interface{}, r string) {
+		err := c.XML(v)
+		utils.AssertEqual(t, nil, err)
+		utils.AssertEqual(t, r, string(c.Response().Body()))
+	}
+
+	testEmpty(nil, "")
+	testEmpty("", `<string></string>`)
+	testEmpty(0, "<int>0</int>")
+	testEmpty([]int{}, "")
+}
+
+// go test -run=^$ -bench=Benchmark_Ctx_XML -benchmem -count=4
+func Benchmark_Ctx_XML(b *testing.B) {
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	type SomeStruct struct {
+		Name string `xml:"Name"`
+		Age  uint8  `xml:"Age"`
+	}
+	data := SomeStruct{
+		Name: "Grame",
+		Age:  20,
+	}
+	var err error
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		err = c.XML(data)
+	}
+
+	utils.AssertEqual(b, nil, err)
+	utils.AssertEqual(b, `<SomeStruct><Name>Grame</Name><Age>20</Age></SomeStruct>`, string(c.Response().Body()))
 }
 
 // go test -run Test_Ctx_Links
@@ -2741,16 +3121,74 @@ func Benchmark_Ctx_Get_Location_From_Route(b *testing.B) {
 
 // go test -run Test_Ctx_Get_Location_From_Route_name
 func Test_Ctx_Get_Location_From_Route_name(t *testing.T) {
+	t.Run("case insensitive", func(t *testing.T) {
+		app := New()
+		c := app.AcquireCtx(&fasthttp.RequestCtx{})
+		defer app.ReleaseCtx(c)
+		app.Get("/user/:name", func(c *Ctx) error {
+			return c.SendString(c.Params("name"))
+		}).Name("User")
+
+		location, err := c.GetRouteURL("User", Map{"name": "fiber"})
+		utils.AssertEqual(t, nil, err)
+		utils.AssertEqual(t, "/user/fiber", location)
+
+		location, err = c.GetRouteURL("User", Map{"Name": "fiber"})
+		utils.AssertEqual(t, nil, err)
+		utils.AssertEqual(t, "/user/fiber", location)
+	})
+	
+	t.Run("case sensitive",func(t *testing.T) {
+		app := New(Config{CaseSensitive: true})
+		c := app.AcquireCtx(&fasthttp.RequestCtx{})
+		defer app.ReleaseCtx(c)
+		app.Get("/user/:name", func(c *Ctx) error {
+			return c.SendString(c.Params("name"))
+		}).Name("User")
+
+		location, err := c.GetRouteURL("User", Map{"name": "fiber"})
+		utils.AssertEqual(t, nil, err)
+		utils.AssertEqual(t, "/user/fiber", location)
+
+		location, err = c.GetRouteURL("User", Map{"Name": "fiber"})
+		utils.AssertEqual(t, nil, err)
+		utils.AssertEqual(t, "/user/", location)
+	})
+}
+
+// go test -run Test_Ctx_Get_Location_From_Route_name_Optional_greedy
+func Test_Ctx_Get_Location_From_Route_name_Optional_greedy(t *testing.T) {
 	app := New()
 	c := app.AcquireCtx(&fasthttp.RequestCtx{})
 	defer app.ReleaseCtx(c)
-	app.Get("/user/:name", func(c *Ctx) error {
-		return c.SendString(c.Params("name"))
-	}).Name("User")
+	app.Get("/:phone/*/send/*", func(c *Ctx) error {
+		return c.SendString("Phone: " + c.Params("phone") + "\nFirst Param: " + c.Params("*1") + "\nSecond Param: " + c.Params("*2"))
+	}).Name("SendSms")
 
-	location, err := c.GetRouteURL("User", Map{"name": "fiber"})
+	location, err := c.GetRouteURL("SendSms", Map{
+		"phone": "23456789",
+		"*1":    "sms",
+		"*2":    "test-msg",
+	})
 	utils.AssertEqual(t, nil, err)
-	utils.AssertEqual(t, "/user/fiber", location)
+	utils.AssertEqual(t, "/23456789/sms/send/test-msg", location)
+}
+
+// go test -run Test_Ctx_Get_Location_From_Route_name_Optional_greedy_one_param
+func Test_Ctx_Get_Location_From_Route_name_Optional_greedy_one_param(t *testing.T) {
+	app := New()
+	c := app.AcquireCtx(&fasthttp.RequestCtx{})
+	defer app.ReleaseCtx(c)
+	app.Get("/:phone/*/send", func(c *Ctx) error {
+		return c.SendString("Phone: " + c.Params("phone") + "\nFirst Param: " + c.Params("*1"))
+	}).Name("SendSms")
+
+	location, err := c.GetRouteURL("SendSms", Map{
+		"phone": "23456789",
+		"*":     "sms",
+	})
+	utils.AssertEqual(t, nil, err)
+	utils.AssertEqual(t, "/23456789/sms/send", location)
 }
 
 type errorTemplateEngine struct{}
@@ -2861,7 +3299,7 @@ func Test_Ctx_SendStream(t *testing.T) {
 	file, err := os.Open("./.github/index.html")
 	utils.AssertEqual(t, nil, err)
 	c.SendStream(bufio.NewReader(file))
-	utils.AssertEqual(t, true, (c.Response().Header.ContentLength() > 200))
+	utils.AssertEqual(t, true, c.Response().Header.ContentLength() > 200)
 }
 
 // go test -run Test_Ctx_Set
