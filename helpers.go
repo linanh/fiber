@@ -413,6 +413,10 @@ func (app *App) methodInt(s string) int {
 			return 7
 		case MethodPatch:
 			return 8
+		case MethodPropfind:
+			return 9
+		case MethodReport:
+			return 10
 		default:
 			return -1
 		}
@@ -459,16 +463,18 @@ func IsMethodIdempotent(m string) bool {
 
 // HTTP methods were copied from net/http.
 const (
-	MethodGet     = "GET"     // RFC 7231, 4.3.1
-	MethodHead    = "HEAD"    // RFC 7231, 4.3.2
-	MethodPost    = "POST"    // RFC 7231, 4.3.3
-	MethodPut     = "PUT"     // RFC 7231, 4.3.4
-	MethodPatch   = "PATCH"   // RFC 5789
-	MethodDelete  = "DELETE"  // RFC 7231, 4.3.5
-	MethodConnect = "CONNECT" // RFC 7231, 4.3.6
-	MethodOptions = "OPTIONS" // RFC 7231, 4.3.7
-	MethodTrace   = "TRACE"   // RFC 7231, 4.3.8
-	methodUse     = "USE"
+	MethodGet      = "GET"     // RFC 7231, 4.3.1
+	MethodHead     = "HEAD"    // RFC 7231, 4.3.2
+	MethodPost     = "POST"    // RFC 7231, 4.3.3
+	MethodPut      = "PUT"     // RFC 7231, 4.3.4
+	MethodPatch    = "PATCH"   // RFC 5789
+	MethodDelete   = "DELETE"  // RFC 7231, 4.3.5
+	MethodConnect  = "CONNECT" // RFC 7231, 4.3.6
+	MethodOptions  = "OPTIONS" // RFC 7231, 4.3.7
+	MethodTrace    = "TRACE"   // RFC 7231, 4.3.8
+	methodUse      = "USE"
+	MethodPropfind = "PROPFIND"
+	MethodReport   = "REPORT"
 )
 
 // MIME types that are commonly used
